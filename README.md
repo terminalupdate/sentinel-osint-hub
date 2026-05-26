@@ -30,5 +30,5 @@ Sentinel OSINT Hub è una piattaforma web per investigazioni open source che int
 ### 1. Clona il repository
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/sentinel-osint-hub.git
+git clone https://github.com/terminalupdate/sentinel-osint-hub.git
 cd sentinel-osint-hub
