@@ -1,0 +1,40 @@
+# Database
+database/*.db
+database/*.db-journal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+sentinel_web.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (NON committare mai!)
+.env
+*.env
+config.py
+
+# Temporary files
+tmp/
+temp/
+*.tmp
