@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Sentinel OSINT Hub - Versione Avanzata con Moduli Aggiuntivi
+Sentinel OSINT Hub - Versione con Export PDF
 """
 
 import logging
@@ -15,9 +15,10 @@ import hashlib
 import whois
 import dns.resolver
 from datetime import datetime
-from flask import Flask, render_template_string, request, jsonify
+from flask import Flask, render_template_string, request, jsonify, send_file
 import secrets
 import urllib.parse
+from io import BytesIO
 
 # Tentativo import moduli opzionali
 try:
@@ -39,11 +40,25 @@ try:
 except ImportError:
     SHODAN_AVAILABLE = False
 
+# PDF Generation
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
+    print("⚠️ ReportLab non installato. Installa con: python -m pip install reportlab")
+
 # ===== CONFIGURAZIONE =====
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', "")
 SHODAN_API_KEY = os.getenv('SHODAN_API_KEY', "")
 VT_API_KEY = os.getenv('VIRUSTOTAL_API_KEY', "")
 SECRET_KEY = os.getenv('FLASK_SECRET_KEY', secrets.token_hex(32))
+
+SHOW_AI_ANALYSIS = True
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -54,7 +69,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
-# ===== DATABASE (con migrazione) =====
+# ===== DATABASE =====
 def init_db():
     if not os.path.exists('database'):
         os.makedirs('database')
@@ -71,6 +86,14 @@ def init_db():
                       target TEXT,
                       timestamp TEXT,
                       result TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS pdf_reports
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      report_id TEXT,
+                      session_id TEXT,
+                      mode TEXT,
+                      target TEXT,
+                      timestamp TEXT,
+                      filename TEXT)''')
         
         if db_exists:
             c.execute("PRAGMA table_info(history)")
@@ -102,6 +125,17 @@ def get_user_history(session_id, limit=20):
     except Exception as e:
         logger.error(f"Errore history: {e}")
         return []
+
+def save_pdf_record(report_id, session_id, mode, target, filename):
+    try:
+        with sqlite3.connect("database/osint_hub.db") as conn:
+            c = conn.cursor()
+            timestamp = datetime.now().isoformat()
+            c.execute('INSERT INTO pdf_reports (report_id, session_id, mode, target, timestamp, filename) VALUES (?, ?, ?, ?, ?, ?)',
+                      (report_id, session_id, mode, target, timestamp, filename))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Errore salvataggio PDF record: {e}")
 
 # ===== MODULO 1: SOCMINT =====
 def socmint_search(username: str) -> str:
@@ -179,7 +213,6 @@ def email_lookup(email: str) -> str:
     }
     output += f"• Provider: {providers.get(domain, 'Privato/Aziendale')}\n\n"
     
-    # Verifica MX
     try:
         mx = dns.resolver.resolve(domain, 'MX')
         output += f"**📧 SERVER MAIL (MX):**\n"
@@ -215,7 +248,6 @@ def ip_lookup(ip: str) -> str:
     
     output = f"🌐 **IP Analysis: {ip}**\n\n"
     
-    # ipinfo.io
     try:
         resp = requests.get(f"https://ipinfo.io/{ip}/json", timeout=10)
         if resp.status_code == 200:
@@ -230,12 +262,11 @@ def ip_lookup(ip: str) -> str:
     except Exception as e:
         output += f"⚠️ Errore geoloc: {str(e)}\n\n"
     
-    # Shodan (se disponibile)
     if SHODAN_AVAILABLE and SHODAN_API_KEY:
         try:
             api = shodan.Shodan(SHODAN_API_KEY)
             host = api.host(ip)
-            output += f"**🔌 PORTA APERTE:**\n"
+            output += f"**🔌 PORTE APERTE:**\n"
             ports = host.get('ports', [])[:15]
             if ports:
                 output += f"• {', '.join(map(str, ports))}\n\n"
@@ -366,9 +397,8 @@ def news_search(query: str, max_results: int = 8) -> str:
     except Exception as e:
         return f"❌ Errore: {str(e)}\n\n🔗 [Cerca su Google News](https://news.google.com/search?q={query})"
 
-# ===== NUOVO MODULO 7: TELEFONO =====
+# ===== MODULO 7: TELEFONO =====
 def phone_lookup(phone: str) -> str:
-    """Analisi numero di telefono"""
     phone = phone.strip()
     
     output = f"📱 **Phone Analysis: {phone}**\n\n"
@@ -398,16 +428,14 @@ def phone_lookup(phone: str) -> str:
     
     return output
 
-# ===== NUOVO MODULO 8: DOMINIO =====
+# ===== MODULO 8: DOMINIO =====
 def domain_lookup(domain: str) -> str:
-    """Analisi dominio con WHOIS e DNS"""
     domain = domain.strip().lower()
     domain = re.sub(r'^https?://', '', domain)
     domain = domain.split('/')[0]
     
     output = f"🌐 **Domain Analysis: {domain}**\n\n"
     
-    # WHOIS
     try:
         w = whois.whois(domain)
         output += f"**📋 WHOIS:**\n"
@@ -419,7 +447,6 @@ def domain_lookup(domain: str) -> str:
     except:
         output += f"⚠️ WHOIS non disponibile\n\n"
     
-    # DNS
     output += f"**🔍 RECORD DNS:**\n"
     for record in ['A', 'MX', 'NS', 'TXT']:
         try:
@@ -437,9 +464,8 @@ def domain_lookup(domain: str) -> str:
     
     return output
 
-# ===== NUOVO MODULO 9: FILE HASH =====
+# ===== MODULO 9: FILE HASH =====
 def hash_lookup(file_hash: str) -> str:
-    """Analisi hash file su VirusTotal"""
     file_hash = file_hash.strip().upper()
     
     if not re.match(r'^[A-F0-9]{32,64}$', file_hash):
@@ -474,9 +500,8 @@ def hash_lookup(file_hash: str) -> str:
     
     return output
 
-# ===== NUOVO MODULO 10: PASTEBIN =====
+# ===== MODULO 10: PASTEBIN =====
 def pastebin_search(query: str) -> str:
-    """Cerca su Pastebin e siti simili"""
     query = urllib.parse.quote(query)
     
     output = f"📋 **Paste Search: {query}**\n\n"
@@ -493,14 +518,12 @@ def pastebin_search(query: str) -> str:
     
     return output
 
-# ===== NUOVO MODULO 11: CRYPTO MULTI-CHAIN =====
+# ===== MODULO 11: CRYPTO MULTI-CHAIN =====
 def crypto_multi_lookup(address: str) -> str:
-    """Supporto multi-chain crypto"""
     address = address.strip()
     
     output = f"🪙 **Crypto Multi-Chain Lookup**\n\n📍 `{address}`\n\n"
     
-    # Rileva tipo indirizzo
     if address.startswith('0x'):
         output += f"**🔗 ETHEREUM / BSC / POLYGON:**\n"
         output += f"• [Etherscan](https://etherscan.io/address/{address})\n"
@@ -519,6 +542,86 @@ def crypto_multi_lookup(address: str) -> str:
         output += f"• [OKLink](https://www.oklink.com/search/{address})\n"
     
     return output
+
+# ===== MODULO AI: OPENROUTER =====
+
+async def ai_analysis_async(osint_data: str, finance_data: str) -> str:
+    if not OPENROUTER_API_KEY:
+        return "❌ **AI Analysis non disponibile**\n\nPer abilitare l'analisi AI, configura OPENROUTER_API_KEY"
+    
+    osint_summary = osint_data[:2000] if osint_data else "Nessun dato OSINT disponibile"
+    fin_summary = finance_data[:500] if finance_data and finance_data != "N/D" else "Nessun dato finanziario"
+    
+    prompt = f"""Sei un analista senior OSINT specializzato in intelligence investigativa e risk assessment.
+
+**DATI OSINT:**
+{osint_summary}
+
+**DATI FINANZIARI:**
+{fin_summary}
+
+**RICHIESTA:**
+Produci un'analisi concisa (max 200 parole) con:
+1. **Executive Summary** (2-3 righe)
+2. **Punti chiave** (3-5 bullet points)
+3. **Livello di rischio** (Basso/Medio/Alto)
+4. **Raccomandazioni operative** (2-3 suggerimenti)
+
+Usa un tono professionale, rispondi in italiano, evidenzia eventuali red flag.
+"""
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/sentinel-osint-hub",
+        "X-Title": "Sentinel OSINT Hub"
+    }
+    
+    MODEL = "meta-llama/llama-3.1-70b-instruct"
+    
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": "Sei un analista OSINT e financial investigator esperto. Rispondi sempre in italiano in modo chiaro e professionale."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.5,
+        "max_tokens": 800
+    }
+    
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=45)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    content = data['choices'][0]['message']['content']
+                    footer = f"\n\n---\n🤖 *Analisi generata da {MODEL}*"
+                    return content + footer
+                else:
+                    error_text = await response.text()
+                    return f"⚠️ **Errore API OpenRouter**\nHTTP {response.status}"
+    except ImportError:
+        return "⚠️ **aiohttp non installato**\nInstalla con: `pip install aiohttp`"
+    except Exception as e:
+        return f"⚠️ **Errore connessione AI**\n```\n{str(e)[:200]}\n```"
+
+
+def ai_analysis_sync(osint_data: str, finance_data: str) -> str:
+    import asyncio
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(ai_analysis_async(osint_data, finance_data))
+        loop.close()
+        return result
+    except Exception as e:
+        return f"⚠️ **Errore AI**\n```\n{str(e)[:150]}\n```"
 
 # ===== FUNZIONE PRINCIPALE =====
 def run_search(mode: str, target: str) -> dict:
@@ -550,25 +653,151 @@ def run_search(mode: str, target: str) -> dict:
             result = func(target)
             fin_data = fin_default
         
+        ai_result = "N/D"
+        if SHOW_AI_ANALYSIS and OPENROUTER_API_KEY:
+            print(f"[*] Avvio analisi AI per {mode}...")
+            ai_result = ai_analysis_sync(result, fin_data if fin_data else "N/D")
+            print(f"[*] Analisi AI completata")
+        elif SHOW_AI_ANALYSIS and not OPENROUTER_API_KEY:
+            ai_result = "ℹ️ **AI Analysis**\n\nConfigura OPENROUTER_API_KEY per abilitare l'analisi automatica."
+        
         return {
             "success": True,
             "osint_data": result,
             "finance_data": fin_data if fin_data else "N/D",
-            "ai_analysis": "Analisi AI disponibile con OpenRouter",
+            "ai_analysis": ai_result,
             "mode": mode,
             "target": target
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# ===== TEMPLATE HTML (con nuovi moduli) =====
+# ===== FUNZIONE GENERAZIONE PDF =====
+
+def create_pdf_report(data: dict) -> BytesIO:
+    if not REPORTLAB_AVAILABLE:
+        raise Exception("ReportLab non installato")
+    
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    
+    styles = getSampleStyleSheet()
+    
+    title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=20, alignment=TA_CENTER, spaceAfter=30)
+    section_style = ParagraphStyle('SectionStyle', parent=styles['Heading2'], fontSize=14, textColor=colors.HexColor('#0066cc'), spaceBefore=15, spaceAfter=10)
+    body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=9, spaceAfter=6)
+    
+    story = []
+    
+    # Titolo
+    story.append(Paragraph("SENTINEL OSINT HUB", title_style))
+    story.append(Paragraph(f"Report: {data.get('mode', 'N/D').upper()} - {data.get('target', 'N/D')}", body_style))
+    story.append(Spacer(1, 20))
+    
+    # Info
+    story.append(Paragraph("INFORMAZIONI REPORT", section_style))
+    info_text = f"""
+    <b>Target:</b> {data.get('target', 'N/D')}<br/>
+    <b>Modalità:</b> {data.get('mode', 'N/D').upper()}<br/>
+    <b>Data:</b> {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}<br/>
+    <b>Report ID:</b> {data.get('report_id', 'N/D')}
+    """
+    story.append(Paragraph(info_text, body_style))
+    story.append(Spacer(1, 15))
+    
+    # OSINT Data
+    story.append(Paragraph("OSINT DATA", section_style))
+    osint_text = data.get('osint_data', 'Nessun dato')[:3000].replace('\n', '<br/>')
+    story.append(Paragraph(osint_text, body_style))
+    story.append(Spacer(1, 15))
+    
+    # Finance Data
+    if data.get('finance_data') and data['finance_data'] != 'N/D':
+        story.append(Paragraph("FINANCE DATA", section_style))
+        fin_text = data['finance_data'][:1000].replace('\n', '<br/>')
+        story.append(Paragraph(fin_text, body_style))
+        story.append(Spacer(1, 15))
+    
+    # AI Analysis
+    if data.get('ai_analysis') and data['ai_analysis'] != 'N/D':
+        story.append(Paragraph("AI ANALYSIS", section_style))
+        ai_text = data['ai_analysis'][:1500].replace('\n', '<br/>')
+        story.append(Paragraph(ai_text, body_style))
+    
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+# ===== ROTTE FLASK =====
+
+@app.route('/')
+def index():
+    ai_available = bool(OPENROUTER_API_KEY)
+    pdf_available = REPORTLAB_AVAILABLE
+    return render_template_string(HTML_TEMPLATE, ai_available=ai_available, pdf_available=pdf_available)
+
+@app.route('/api/search', methods=['POST'])
+def api_search():
+    data = request.json
+    mode = data.get('mode')
+    target = data.get('target', '').strip()
+    session_id = data.get('session_id', 'unknown')
+    
+    if not mode or not target:
+        return jsonify({'success': False, 'error': 'Mode e target richiesti'})
+    
+    result = run_search(mode, target)
+    
+    if result.get('success'):
+        save_search(session_id, mode, target, result.get('osint_data', '')[:500])
+    
+    return jsonify(result)
+
+@app.route('/api/export_pdf', methods=['POST'])
+def export_pdf():
+    data = request.json
+    report_data = data.get('report_data', {})
+    session_id = data.get('session_id', 'unknown')
+    
+    if not REPORTLAB_AVAILABLE:
+        return jsonify({'success': False, 'error': 'ReportLab non installato'})
+    
+    try:
+        report_id = f"OSINT_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(4)}"
+        report_data['report_id'] = report_id
+        
+        pdf_buffer = create_pdf_report(report_data)
+        
+        filename = f"{report_id}.pdf"
+        save_pdf_record(report_id, session_id, report_data.get('mode', 'unknown'), 
+                       report_data.get('target', 'unknown'), filename)
+        
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=filename
+        )
+        
+    except Exception as e:
+        logger.error(f"Errore export PDF: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/history', methods=['GET'])
+def api_history():
+    session_id = request.args.get('session_id', 'unknown')
+    history = get_user_history(session_id, limit=20)
+    return jsonify({'history': [{'mode': m, 'target': t, 'timestamp': ts} for m, t, ts in history]})
+
+# ===== HTML TEMPLATE COMPLETO =====
+
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="it">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sentinel OSINT Hub - Advanced</title>
+    <title>Sentinel OSINT Hub</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -589,7 +818,7 @@ HTML_TEMPLATE = '''
         
         .modules-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
             gap: 12px;
             margin-bottom: 30px;
         }
@@ -605,7 +834,7 @@ HTML_TEMPLATE = '''
         .module-card:hover { transform: translateY(-3px); border-color: #00e5ff; }
         .module-card.active { border-color: #00e5ff; background: rgba(0, 229, 255, 0.15); }
         .module-emoji { font-size: 2rem; margin-bottom: 8px; }
-        .module-title { font-weight: bold; font-size: 0.9rem; }
+        .module-title { font-weight: bold; font-size: 0.8rem; }
         
         .search-area {
             background: rgba(20, 25, 55, 0.8);
@@ -626,6 +855,7 @@ HTML_TEMPLATE = '''
             font-size: 1rem;
         }
         .search-input:focus { outline: none; border-color: #00e5ff; }
+        .search-input:disabled { opacity: 0.5; cursor: not-allowed; }
         .search-btn {
             padding: 15px 30px;
             background: linear-gradient(135deg, #00e5ff, #00c853);
@@ -635,8 +865,13 @@ HTML_TEMPLATE = '''
             font-weight: bold;
             cursor: pointer;
         }
-        .search-btn:hover { transform: scale(1.02); }
+        .search-btn:hover:not(:disabled) { transform: scale(1.02); }
         .search-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        
+        .pdf-btn {
+            background: linear-gradient(135deg, #ff4444, #cc0000);
+            margin-left: 10px;
+        }
         
         .results-area {
             background: rgba(20, 25, 55, 0.6);
@@ -652,6 +887,8 @@ HTML_TEMPLATE = '''
             margin-bottom: 20px;
             padding-bottom: 10px;
             border-bottom: 1px solid #333;
+            flex-wrap: wrap;
+            gap: 10px;
         }
         .results-title { font-size: 1.2rem; color: #00e5ff; }
         .results-content {
@@ -729,6 +966,7 @@ HTML_TEMPLATE = '''
         }
         
         .error-message { background: rgba(255, 68, 68, 0.2); border: 1px solid #ff4444; border-radius: 10px; padding: 15px; color: #ff8888; }
+        .badge { background: rgba(0,229,255,0.2); padding: 4px 12px; border-radius: 20px; font-size: 12px; display: inline-block; margin-top: 10px; }
         
         @media (max-width: 768px) {
             .modules-grid { grid-template-columns: repeat(2, 1fr); }
@@ -741,6 +979,8 @@ HTML_TEMPLATE = '''
     <div class="header">
         <h1>🛰 Sentinel OSINT Hub</h1>
         <p>Advanced Open Source Intelligence Platform</p>
+        {% if ai_available %}<div class="badge">🤖 AI Powered by OpenRouter</div>{% endif %}
+        {% if pdf_available %}<div class="badge">📄 Export PDF</div>{% endif %}
     </div>
 
     <div class="container">
@@ -759,17 +999,23 @@ HTML_TEMPLATE = '''
         </div>
 
         <div class="search-area">
-            <label class="search-label" id="search-label">Seleziona un modulo per iniziare</label>
+            <label class="search-label" id="search-label">👆 Seleziona un modulo per iniziare</label>
             <div class="search-input-group">
                 <input type="text" id="search-input" class="search-input" placeholder="Inserisci target..." disabled>
-                <button id="search-btn" class="search-btn" disabled>Cerca</button>
+                <button id="search-btn" class="search-btn" disabled>🔍 Cerca</button>
             </div>
         </div>
 
         <div id="loading" class="loading"><div class="spinner"></div><p>🔍 Ricerca in corso...</p></div>
 
         <div id="results-area" class="results-area">
-            <div class="results-header"><span class="results-title">Risultati</span><button id="copy-results" class="search-btn" style="padding: 8px 15px;">📋 Copia</button></div>
+            <div class="results-header">
+                <span class="results-title">📊 Risultati</span>
+                <div>
+                    <button id="copy-results" class="search-btn" style="padding: 8px 15px;">📋 Copia</button>
+                    <button id="export-pdf" class="search-btn pdf-btn" style="padding: 8px 15px;">📄 Esporta PDF</button>
+                </div>
+            </div>
             <div id="results-content" class="results-content"></div>
         </div>
     </div>
@@ -777,12 +1023,16 @@ HTML_TEMPLATE = '''
     <button class="history-toggle" onclick="toggleHistory()">📜</button>
 
     <div id="history-sidebar" class="history-sidebar">
-        <div class="history-header"><span>📊 Cronologia</span><button class="history-close" onclick="toggleHistory()">×</button></div>
+        <div class="history-header">
+            <span>📊 Cronologia</span>
+            <button class="history-close" onclick="toggleHistory()">×</button>
+        </div>
         <div id="history-list">Nessuna ricerca</div>
     </div>
 
     <script>
         let currentMode = null;
+        let currentResultData = null;
         let sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
         
         const labels = {
@@ -799,26 +1049,33 @@ HTML_TEMPLATE = '''
             'news': '📰 Parole chiave news'
         };
         
-        document.querySelectorAll('.module-card').forEach(card => {
-            card.addEventListener('click', () => {
-                document.querySelectorAll('.module-card').forEach(c => c.classList.remove('active'));
-                card.classList.add('active');
-                currentMode = card.dataset.mode;
-                document.getElementById('search-label').textContent = labels[currentMode] || 'Inserisci target:';
-                document.getElementById('search-input').disabled = false;
-                document.getElementById('search-btn').disabled = false;
-                document.getElementById('search-input').focus();
+        const modules = document.querySelectorAll('.module-card');
+        const searchInput = document.getElementById('search-input');
+        const searchBtn = document.getElementById('search-btn');
+        const searchLabel = document.getElementById('search-label');
+        
+        modules.forEach(card => {
+            card.addEventListener('click', function() {
+                modules.forEach(c => c.classList.remove('active'));
+                this.classList.add('active');
+                currentMode = this.dataset.mode;
+                searchLabel.textContent = labels[currentMode] || 'Inserisci target:';
+                searchInput.disabled = false;
+                searchBtn.disabled = false;
+                searchInput.focus();
+                searchInput.placeholder = labels[currentMode] || 'Inserisci target...';
             });
         });
         
         async function performSearch() {
-            const target = document.getElementById('search-input').value.trim();
-            if (!target) { alert('Inserisci un target'); return; }
-            if (!currentMode) { alert('Seleziona un modulo'); return; }
+            const target = searchInput.value.trim();
+            if (!target) { alert('❌ Inserisci un target valido'); return; }
+            if (!currentMode) { alert('❌ Seleziona un modulo prima di cercare'); return; }
             
             document.getElementById('loading').style.display = 'block';
             document.getElementById('results-area').style.display = 'none';
-            document.getElementById('search-btn').disabled = true;
+            searchBtn.disabled = true;
+            searchInput.disabled = true;
             
             try {
                 const response = await fetch('/api/search', {
@@ -829,48 +1086,84 @@ HTML_TEMPLATE = '''
                 const data = await response.json();
                 
                 if (data.success) {
+                    currentResultData = data;
                     displayResults(data);
                     loadHistory();
                 } else {
-                    displayError(data.error || 'Errore');
+                    displayError(data.error || 'Errore sconosciuto');
                 }
             } catch (error) {
-                displayError('Errore: ' + error.message);
+                displayError('Errore di connessione: ' + error.message);
             } finally {
                 document.getElementById('loading').style.display = 'none';
-                document.getElementById('search-btn').disabled = false;
+                searchBtn.disabled = false;
+                searchInput.disabled = false;
+                searchInput.focus();
             }
         }
         
         function displayResults(data) {
             const formatText = (text) => {
                 if (!text) return '';
-                return text
+                let formatted = text
                     .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
                     .replace(/\\[(.+?)\\]\\((.+?)\\)/g, '<a href="$2" target="_blank">$1</a>')
                     .replace(/`(.+?)`/g, '<code>$1</code>')
                     .replace(/\\n/g, '<br>')
                     .replace(/•/g, '&bull;');
+                return formatted;
             };
             
-            let html = `<strong>🎯 Target:</strong> ${escapeHtml(data.target)}<br>`;
-            html += `<strong>📋 Modalità:</strong> ${data.mode.toUpperCase()}<br><br>`;
-            html += `<div style="background:rgba(0,0,0,0.3);padding:15px;border-radius:8px;">${formatText(data.osint_data)}</div>`;
+            let html = `<div style="margin-bottom: 20px;">`;
+            html += `<strong>🎯 Target:</strong> ${escapeHtml(data.target)}<br>`;
+            html += `<strong>📋 Modalità:</strong> ${data.mode.toUpperCase()}<br>`;
+            html += `<strong>🕒 Data:</strong> ${new Date().toLocaleString()}<br>`;
+            html += `</div>`;
+            
+            html += `<div style="margin-bottom: 20px;">`;
+            html += `<strong>🌐 OSINT DATA:</strong><br><br>`;
+            html += `<div style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 8px;">${formatText(data.osint_data)}</div>`;
+            html += `</div>`;
+            
+            if (data.finance_data && data.finance_data !== 'N/D') {
+                html += `<div style="margin-bottom: 20px;">`;
+                html += `<strong>📈 FINANCE DATA:</strong><br><br>`;
+                html += `<div style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 8px;">${formatText(data.finance_data)}</div>`;
+                html += `</div>`;
+            }
+            
+            if (data.ai_analysis && data.ai_analysis !== 'N/D') {
+                html += `<div style="margin-bottom: 20px;">`;
+                html += `<strong>🤖 AI ANALYSIS:</strong><br><br>`;
+                html += `<div style="background: rgba(0,229,255,0.1); padding: 15px; border-radius: 8px; border-left: 3px solid #00e5ff;">${formatText(data.ai_analysis)}</div>`;
+                html += `</div>`;
+            }
             
             document.getElementById('results-content').innerHTML = html;
             document.getElementById('results-area').style.display = 'block';
             document.getElementById('results-area').scrollIntoView({ behavior: 'smooth' });
         }
         
-        function escapeHtml(text) { const div = document.createElement('div'); div.textContent = text; return div.innerHTML; }
-        function displayError(error) { document.getElementById('results-content').innerHTML = `<div class="error-message">❌ ${escapeHtml(error)}</div>`; document.getElementById('results-area').style.display = 'block'; }
+        function escapeHtml(text) { 
+            const div = document.createElement('div'); 
+            div.textContent = text; 
+            return div.innerHTML; 
+        }
+        
+        function displayError(error) { 
+            document.getElementById('results-content').innerHTML = `<div class="error-message">❌ ${escapeHtml(error)}</div>`; 
+            document.getElementById('results-area').style.display = 'block'; 
+        }
         
         async function loadHistory() {
             try {
                 const response = await fetch(`/api/history?session_id=${sessionId}`);
                 const data = await response.json();
                 const historyDiv = document.getElementById('history-list');
-                if (!data.history || data.history.length === 0) { historyDiv.innerHTML = 'Nessuna ricerca'; return; }
+                if (!data.history || data.history.length === 0) { 
+                    historyDiv.innerHTML = '<div style="text-align:center; color:#888;">Nessuna ricerca</div>'; 
+                    return; 
+                }
                 let html = '';
                 data.history.forEach(item => {
                     const date = new Date(item.timestamp);
@@ -886,13 +1179,72 @@ HTML_TEMPLATE = '''
         
         function rerunSearch(mode, target) {
             const card = Array.from(document.querySelectorAll('.module-card')).find(c => c.dataset.mode === mode);
-            if (card) card.click();
-            setTimeout(() => { document.getElementById('search-input').value = target; performSearch(); }, 100);
+            if (card) {
+                card.click();
+                setTimeout(() => {
+                    searchInput.value = target;
+                    performSearch();
+                }, 100);
+            }
         }
         
-        function toggleHistory() { document.getElementById('history-sidebar').classList.toggle('open'); }
-        document.getElementById('copy-results').addEventListener('click', () => { navigator.clipboard.writeText(document.getElementById('results-content').innerText).then(() => alert('Copiato!')); });
-        document.getElementById('search-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') performSearch(); });
+        function toggleHistory() { 
+            document.getElementById('history-sidebar').classList.toggle('open'); 
+        }
+        
+        // Event listeners
+        document.getElementById('copy-results').addEventListener('click', () => { 
+            const content = document.getElementById('results-content').innerText;
+            navigator.clipboard.writeText(content).then(() => alert('✅ Risultati copiati!')).catch(() => alert('❌ Errore copia')); 
+        });
+        
+        document.getElementById('export-pdf').addEventListener('click', async () => {
+            if (!currentResultData) {
+                alert('❌ Nessun risultato da esportare');
+                return;
+            }
+            
+            const btn = document.getElementById('export-pdf');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '⏳ Generazione...';
+            btn.disabled = true;
+            
+            try {
+                const response = await fetch('/api/export_pdf', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        report_data: currentResultData,
+                        session_id: sessionId
+                    })
+                });
+                
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `osint_${currentResultData.mode}_${currentResultData.target}.pdf`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                    alert('✅ PDF generato!');
+                } else {
+                    const error = await response.json();
+                    alert('❌ Errore: ' + (error.error || 'Generazione PDF fallita'));
+                }
+            } catch (error) {
+                alert('❌ Errore nella generazione del PDF');
+            } finally {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        });
+        
+        searchInput.addEventListener('keypress', (e) => { 
+            if (e.key === 'Enter' && !searchBtn.disabled && currentMode) performSearch(); 
+        });
         
         loadHistory();
         setInterval(loadHistory, 30000);
@@ -901,51 +1253,26 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-# ===== ROTTE FLASK =====
-
-@app.route('/')
-def index():
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route('/api/search', methods=['POST'])
-def api_search():
-    data = request.json
-    mode = data.get('mode')
-    target = data.get('target', '').strip()
-    session_id = data.get('session_id', 'unknown')
-    
-    if not mode or not target:
-        return jsonify({'success': False, 'error': 'Mode e target richiesti'})
-    
-    result = run_search(mode, target)
-    
-    if result.get('success'):
-        save_search(session_id, mode, target, result.get('osint_data', '')[:500])
-    
-    return jsonify(result)
-
-@app.route('/api/history', methods=['GET'])
-def api_history():
-    session_id = request.args.get('session_id', 'unknown')
-    history = get_user_history(session_id, limit=20)
-    return jsonify({'history': [{'mode': m, 'target': t, 'timestamp': ts} for m, t, ts in history]})
-
 # ===== MAIN =====
 
 if __name__ == '__main__':
     init_db()
     
     print("\n" + "=" * 60)
-    print("🛰 SENTINEL OSINT HUB - ADVANCED")
+    print("🛰 SENTINEL OSINT HUB - CON EXPORT PDF")
     print("=" * 60)
     print("✅ Moduli disponibili: 11")
-    print("   👤 SOCMINT | 📧 Email | 🌐 IP | 📱 Phone | 🌍 Domain")
-    print("   🔐 File Hash | 📋 Pastebin | 📈 Finance | ₿ Bitcoin")
-    print("   🪙 Multi-Crypto | 📰 News")
+    print("✅ Export PDF: " + ("✅ Disponibile" if REPORTLAB_AVAILABLE else "❌ Installare reportlab"))
     print("=" * 60)
     print("\n🌐 Browser: http://127.0.0.1:5000")
+    print("📄 Ogni risultato può essere esportato in PDF")
     print("🛑 Ctrl+C per fermare\n")
     
+    if not REPORTLAB_AVAILABLE:
+        print("⚠️ Per abilitare export PDF, installa:")
+        print("   python -m pip install reportlab")
+        print()
+    
     import warnings
-warnings.filterwarnings("ignore")
-app.run(host='127.0.0.1', port=5000, debug=False, threaded=True, use_reloader=False)
+    warnings.filterwarnings("ignore")
+    app.run(host='127.0.0.1', port=5000, debug=False, threaded=True, use_reloader=False)
