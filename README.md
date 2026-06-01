@@ -27,7 +27,7 @@
 
 ```bash
 # Clona il repository
-git clone https://github.com/YOUR_USERNAME/sentinel-osint-hub.git
+git clone https://github.com/terminalupdate/sentinel-osint-hub
 cd sentinel-osint-hub
 
 # Installa dipendenze
