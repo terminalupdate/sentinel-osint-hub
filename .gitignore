@@ -1,19 +1,26 @@
+# .gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
 # Database
 database/*.db
-database/*.db-journal
+database/*.sqlite
+*.db
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-
-# Virtual Environment
-.venv/
+# Environment
+.env
 venv/
-ENV/
 env/
+ENV/
+.venv
 
 # IDE
 .vscode/
@@ -23,18 +30,15 @@ env/
 
 # Logs
 *.log
-sentinel_web.log
+logs/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Secrets (NON committare mai!)
-.env
-*.env
-config.py
+# Report PDF generati
+*.pdf
 
-# Temporary files
-tmp/
-temp/
-*.tmp
+# API Keys (sicurezza)
+config.py
+secrets.py
