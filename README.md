@@ -1,34 +1,38 @@
 # 🛰 Sentinel OSINT Hub
 
-**Advanced Open Source Intelligence Platform**
+![Version](https://img.shields.io/badge/version-2.0-blue)
+![Python](https://img.shields.io/badge/python-3.10%2B-green)
+![Flask](https://img.shields.io/badge/flask-2.3-red)
+![License](https://img.shields.io/badge/license-MIT-yellow)
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.8+-green.svg)](https://www.python.org/)
+**Advanced Open Source Intelligence Platform** - Uno strumento OSINT all-in-one con analisi AI integrata e export PDF.
 
-## 📋 Descrizione
+## ✨ Features
 
-Sentinel OSINT Hub è una piattaforma web per investigazioni open source che integra **11 moduli OSINT** in un'unica interfaccia user-friendly.
-
-### 🎯 Moduli Disponibili
-
-| Modulo | Icona | Funzione |
-|--------|-------|----------|
-| SOCMINT | 👤 | Username search su 20+ piattaforme |
-| Email | 📧 | Analisi email, MX record, leak database |
-| IP/Network | 🌐 | Geolocalizzazione, threat intelligence |
-| Phone | 📱 | Analisi numeri di telefono |
-| Domain | 🌍 | WHOIS, DNS records, certificati |
-| File Hash | 🔐 | Analisi hash su VirusTotal |
-| Pastebin | 📋 | Ricerca leak e pastebin |
-| Finance | 📈 | Azioni, market cap real-time |
-| Bitcoin | ₿ | Saldo e transazioni blockchain |
-| Multi-Crypto | 🪙 | Supporto Ethereum, BSC, Solana, Tron |
-| News | 📰 | Aggregatore Google News |
+- 👤 **SOCMINT** - Ricerca username su 25+ piattaforme social
+- 📧 **Email Analysis** - Verifica leak database + MX records
+- 🌐 **IP/Network** - Geolocalizzazione + porte aperte (Shodan)
+- 📱 **Phone Analysis** - Operatore, paese, verifica WhatsApp/Telegram
+- 🌍 **Domain Analysis** - WHOIS + DNS records completi
+- 🔐 **File Hash** - VirusTotal integration
+- 📋 **Pastebin Search** - Cerca leak e paste
+- 📈 **Finance** - Dati azionari real-time
+- ₿ **Bitcoin Lookup** - Saldo e transazioni
+- 🪙 **Multi-Crypto** - Supporto ETH, BSC, SOL, TRON
+- 📰 **News Search** - Ultime notizie da Google News
+- 🤖 **AI Analysis** - Analisi automatica con OpenRouter (Llama 3.1, GPT-4o-mini, Gemini)
+- 📄 **Export PDF** - Report professionali in PDF
 
 ## 🚀 Installazione
 
-### 1. Clona il repository
-
 ```bash
-git clone https://github.com/terminalupdate/sentinel-osint-hub.git
+# Clona il repository
+git clone https://github.com/YOUR_USERNAME/sentinel-osint-hub.git
 cd sentinel-osint-hub
+
+# Installa dipendenze
+pip install -r requirements.txt
+
+# (Opzionale) Configura API keys
+cp .env.example .env
+# Modifica .env con le tue chiavi
